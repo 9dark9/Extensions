@@ -1,4 +1,4 @@
-# Addons
+# 浏览器扩展
 
 自用 Firefox 和 Chrome 扩展。
 
