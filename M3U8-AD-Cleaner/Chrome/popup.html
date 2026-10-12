@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    width: 320px;
+    margin: 0;
+    padding: 14px 16px;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 13px;
+    color: #222;
+    background: #fff;
+  }
+
+  @media (hover: none) and (pointer: coarse) {
+    body {
+      width: 100%;
+      max-width: 100%;
+      margin: 0;
+    }
+  }
+
+  @media (prefers-color-scheme: dark) {
+    body { background: #1f1f1f; color: #eee; }
+    .card { background: #2a2a2a !important; }
+    .row-label { color: #999 !important; }
+    .footer { border-color: #333 !important; }
+    .footer-hint { color: #666; }
+  }
+
+  h1 {
+    font-size: 14px;
+    margin: 0 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  h1 img { width: 20px; height: 20px; flex: 0 0 auto; }
+  h1 span { flex: 1 1 auto; min-width: 0; }
+
+  .power-btn {
+    flex: 0 0 auto;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: #e5e7eb;
+    color: #9ca3af;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+  }
+  .power-btn.on {
+    background: #dbeafe;
+    color: #2563eb;
+  }
+  .power-btn:hover { opacity: .85; }
+  .power-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  .card {
+    background: #f5f5f5;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+  .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    gap: 10px;
+  }
+  .row-label { color: #666; flex: 0 0 auto; }
+  .row-value {
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 12px;
+    text-align: right;
+    word-break: break-all;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot.on { background: #22c55e; }
+  .dot.off { background: #94a3b8; }
+  .count {
+    font-size: 22px;
+    font-weight: 700;
+    color: #22c55e;
+    line-height: 1;
+  }
+  .count.zero { color: #94a3b8; }
+
+  .mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 8px 4px 10px;
+    background: #eef2ff;
+    color: #3730a3;
+    border: 1px solid #c7d2fe;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .mode-toggle:hover { background: #e0e7ff; }
+  .mode-toggle:disabled { opacity: .5; cursor: not-allowed; }
+  .mode-arrows {
+    flex: 0 0 auto;
+    display: block;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .power-btn { background: #333; color: #666; }
+    .power-btn.on { background: #1e3a8a; color: #60a5fa; }
+    .mode-toggle { background: #2a3152; color: #a5b4fc; border-color: #3d4682; }
+    .mode-toggle:hover { background: #364073; }
+    .mode-toggle svg path:nth-child(1) { fill: #60a5fa; }
+    .mode-toggle svg path:nth-child(2) { fill: #9ca3af; }
+  }
+
+  .footer {
+    border-top: 1px solid #eee;
+    padding-top: 10px;
+    margin-top: 4px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .footer button {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+  .footer-hint {
+    font-size: 11px;
+    color: #999;
+    text-align: center;
+    margin: 8px 0 0;
+    line-height: 1.4;
+  }
+  button {
+    padding: 7px 10px;
+    border: 0;
+    border-radius: 6px;
+    background: #4f6df5;
+    color: #fff;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  button:hover:not(:disabled) { opacity: .88; }
+  button.ghost {
+    background: transparent;
+    color: #4f6df5;
+    border: 1px solid #4f6df5;
+  }
+  button.warn { background: #dc3545; }
+  button:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+  }
+  #toast {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #333;
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s;
+    max-width: 90%;
+    text-align: center;
+    z-index: 100;
+  }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<h1>
+  <img src="icons/icon-on-48.png" alt="">
+  <span>M3U8 AD Cleaner</span>
+  <button id="powerBtn" class="power-btn" title="启用/禁用扩展">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+      <path d="M12 4 L12 12"/>
+      <path d="M7 7 A 8 8 0 1 0 17 7"/>
+    </svg>
+  </button>
+</h1>
+
+<div class="card">
+  <div class="row">
+    <span class="row-label">过滤模式</span>
+    <span class="row-value">
+      <button id="modeToggleBtn" class="mode-toggle" title="点击切换模式">
+        <span id="modeText">—</span>
+        <svg class="mode-arrows" viewBox="0 0 40 22" width="22" height="12" aria-hidden="true">
+          <path d="M2 5 L30 5 L30 2 L38 7 L30 12 L30 9 L2 9 Z" fill="#4f6df5"/>
+          <path d="M38 13 L10 13 L10 10 L2 15 L10 20 L10 17 L38 17 Z" fill="#374151"/>
+        </svg>
+      </button>
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <span class="row-label">当前站点</span>
+    <span class="row-value" id="hostname">—</span>
+  </div>
+  <div class="row">
+    <span class="row-label">状态</span>
+    <span class="row-value" id="status">
+      <span class="status"><span class="dot off"></span>加载中…</span>
+    </span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <span class="row-label">已过滤</span>
+    <span class="row-value"><span class="count zero" id="count">0</span> 行</span>
+  </div>
+  <div class="row">
+    <span class="row-label">广告片段</span>
+    <span class="row-value" id="adInfo">—</span>
+  </div>
+  <div class="row" id="lastUrlRow" style="display:none;">
+    <span class="row-label">最近</span>
+    <span class="row-value" id="lastUrl">—</span>
+  </div>
+</div>
+
+<div class="footer">
+  <button id="exportAdBtn" disabled>导出广告片段</button>
+  <button id="exportCleanBtn" disabled>导出无广告 m3u8</button>
+  <button id="hlsBtn" style="display:none;">—</button>
+  <button id="whitelistBtn" style="display:none;">—</button>
+  <button id="excludeBtn" style="display:none;">—</button>
+  <button id="logBtn" class="ghost">过滤日志</button>
+  <button id="optionsBtn" class="ghost">⚙️ 设置</button>
+</div>
+
+<p class="footer-hint" id="footerHint">切换状态、模式、名单或 HLS 后，页面会自动刷新。</p>
+
+<div id="toast"></div>
+
+<script src="popup.js"></script>
+</body>
+</html>

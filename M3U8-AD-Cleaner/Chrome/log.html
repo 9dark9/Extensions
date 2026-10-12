@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M3U8 AD Cleaner 过滤日志</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  :root {
+    --pad: 24px;
+    --font-base: 13px;
+    --card-pad: 9px 14px;
+  }
+  @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+    :root {
+      --pad: 12px;
+      --font-base: 14px;
+      --card-pad: 12px 14px;
+    }
+  }
+  body {
+    margin: 0;
+    padding: var(--pad);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: var(--font-base);
+    color: #222;
+    background: #f7f8fa;
+    min-height: 100vh;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #eee; }
+    .card { background: #252525 !important; }
+    .meta { color: #888 !important; }
+    .empty { color: #888 !important; border-color: #333 !important; }
+    .ad-pre { background: #1a1a1a !important; color: #ddd !important; border-color: #333 !important; }
+    .ad-label { color: #888 !important; }
+    .log-card { background: #252525 !important; border-color: #333 !important; }
+  }
+  .container { max-width: 1000px; margin: 0 auto; }
+  h1 {
+    font-size: 18px;
+    margin: 0 0 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .meta { color: #666; font-size: 12px; margin: 0 0 16px; }
+  .toolbar {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  button {
+    min-height: 36px;
+    padding: 7px 14px;
+    border: 0;
+    border-radius: 6px;
+    background: #4f6df5;
+    color: #fff;
+    font-size: var(--font-base);
+    font-family: inherit;
+    cursor: pointer;
+    transition: opacity .15s;
+  }
+  @media (hover: hover) {
+    button:hover { opacity: .88; }
+  }
+  button:active { opacity: .75; }
+  button.ghost {
+    background: transparent;
+    color: #4f6df5;
+    border: 1px solid #4f6df5;
+  }
+  button.danger { background: #dc3545; }
+  @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+    button { min-height: 44px; padding: 10px 16px; }
+    .toolbar { gap: 10px; }
+    .auto-label { width: 100%; justify-content: flex-start; margin-left: 0; margin-top: 4px; }
+  }
+  .auto-label {
+    font-size: 12px;
+    color: #666;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    margin-left: auto;
+  }
+
+  /* 卡片式日志列表 */
+  .log-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .log-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+    padding: var(--card-pad);
+    font-size: var(--font-base);
+    word-break: break-all;
+  }
+  .log-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+    .log-header { font-size: 13px; }
+  }
+  .log-time {
+    color: #888;
+    font-family: ui-monospace, Consolas, monospace;
+    flex: 0 0 auto;
+  }
+  .log-type {
+    font-weight: 600;
+    flex: 0 0 auto;
+  }
+  .log-type.filter { color: #22a06b; }
+  .log-type.error { color: #dc3545; }
+  .log-type.export { color: #4f6df5; }
+  .log-type.system { color: #888; }
+  .log-type.diag { color: #e8a13a; }
+  .log-text {
+    font-family: ui-monospace, Consolas, monospace;
+    line-height: 1.5;
+    word-break: break-all;
+    white-space: pre-wrap;
+  }
+
+  .ad-block { margin-top: 8px; }
+  .ad-label { font-size: 11px; color: #666; margin-bottom: 4px; }
+  .ad-pre {
+    margin: 0;
+    padding: 8px 10px;
+    background: #f5f5f5;
+    border: 1px solid #e5e5e5;
+    border-radius: 6px;
+    font-family: ui-monospace, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+    .ad-pre { font-size: 12px; }
+  }
+
+  .empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: #999;
+    border: 1px dashed #ddd;
+    border-radius: 10px;
+    font-size: var(--font-base);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>过滤日志</h1>
+  <p class="meta" id="meta">加载中…</p>
+
+  <div class="toolbar">
+    <button id="refreshBtn">刷新</button>
+    <button id="copyAllBtn" class="ghost">复制全部</button>
+    <button id="exportBtn" class="ghost">导出文件</button>
+    <button id="clearBtn" class="danger">清空日志</button>
+    <button id="closeBtn" class="ghost">关闭</button>
+    <label class="auto-label">
+      <input type="checkbox" id="autoRefresh" checked>
+      自动刷新（2 秒）
+    </label>
+  </div>
+
+  <div id="content"></div>
+</div>
+<script src="log.js"></script>
+</body>
+</html>
