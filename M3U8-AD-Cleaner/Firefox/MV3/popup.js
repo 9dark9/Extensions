@@ -9,13 +9,14 @@
         hostname: document.getElementById('hostname'),
         status: document.getElementById('status'),
         count: document.getElementById('count'),
-        adInfo: document.getElementById('adInfo'),
+        ruleInfo: document.getElementById('ruleInfo'),
         lastUrl: document.getElementById('lastUrl'),
         lastUrlRow: document.getElementById('lastUrlRow'),
+        matchedRuleRow: document.getElementById('matchedRuleRow'),
+        matchedRule: document.getElementById('matchedRule'),
         exportAdBtn: document.getElementById('exportAdBtn'),
         exportCleanBtn: document.getElementById('exportCleanBtn'),
-        whitelistBtn: document.getElementById('whitelistBtn'),
-        excludeBtn: document.getElementById('excludeBtn'),
+        hlsBtn: document.getElementById('hlsBtn'),
         logBtn: document.getElementById('logBtn'),
         optionsBtn: document.getElementById('optionsBtn'),
         powerBtn: document.getElementById('powerBtn'),
@@ -27,11 +28,10 @@
     let currentTabId = -1;
     let currentHostname = '';
     let currentWhitelistMode = false;
-    let currentInWhitelist = false;
-    let currentInExtraExclude = false;
-    let currentInHardExclude = false;
     let currentEnabled = true;
     let currentOs = '';
+    let currentNativeHlsSuspect = false;
+    let currentHlsDisabled = false;
     let toastTimer = null;
 
     function showToast(text, duration) {
@@ -66,7 +66,8 @@
         setStatus(msg, false);
         el.hostname.textContent = '—';
         el.count.textContent = '0';
-        el.adInfo.textContent = '—';
+        el.ruleInfo.textContent = '—';
+        el.matchedRuleRow.style.display = 'none';
         el.exportAdBtn.disabled = true;
         el.exportCleanBtn.disabled = true;
     }
@@ -86,6 +87,7 @@
             case 'hard-excluded': return '内置排除';
             case 'extra-excluded': return '已排除';
             case 'not-in-whitelist': return '不在白名单';
+            case 'unknown': return currentWhitelistMode ? '不在白名单' : '过滤中';
             default: return '未知';
         }
     }
@@ -211,10 +213,9 @@
             }
 
             currentWhitelistMode = resp.whitelistMode;
-            currentInWhitelist = !!resp.inWhitelist;
-            currentInExtraExclude = !!resp.inExtraExclude;
-            currentInHardExclude = !!resp.inHardExclude;
             currentEnabled = resp.enabled !== false;
+            currentNativeHlsSuspect = !!resp.nativeHlsSuspect;
+            currentHlsDisabled = !!resp.hlsDisabled;
 
             if (currentEnabled) {
                 el.powerBtn.classList.add('on');
@@ -230,29 +231,36 @@
             setStatus(statusText, resp.status === 'active');
             setCount(resp.filterCount || 0);
 
-            const detect = resp.detect || { seen: false, outcome: 'none', parseError: '' };
-            let adInfoText = '—';
-
-            if (detect.outcome === 'pending') {
-                adInfoText = '检查中…';
-            } else if (detect.outcome === 'filtered') {
-                adInfoText = (resp.adLineCount || 0) + ' 行';
-            } else if (detect.outcome === 'no-ads') {
-                adInfoText = '已检查，未发现广告';
-            } else if (detect.outcome === 'invalid') {
-                const pe = detect.parseError;
-                if (pe === 'empty') adInfoText = '响应为空';
-                else if (pe === 'html') adInfoText = '响应是 HTML';
-                else if (pe === 'not-m3u8') adInfoText = '响应不是 m3u8';
-                else if (pe === 'empty-playlist') adInfoText = 'm3u8 无分片';
-                else adInfoText = '响应无效';
-            } else if (detect.outcome === 'parse-error') {
-                adInfoText = '解析失败';
-            } else if (detect.seen) {
-                adInfoText = '检查中…';
+            if (resp.matchedRule) {
+                el.matchedRuleRow.style.display = '';
+                el.matchedRule.textContent = resp.matchedRule;
+            } else {
+                el.matchedRuleRow.style.display = 'none';
             }
 
-            el.adInfo.textContent = adInfoText;
+            const detect = resp.detect || { seen: false, outcome: 'none', parseError: '' };
+            let ruleText = '—';
+
+            if (detect.outcome === 'pending') {
+                ruleText = '检查中…';
+            } else if (detect.outcome === 'filtered') {
+                ruleText = resp.lastRule;
+            } else if (detect.outcome === 'no-ads') {
+                ruleText = '未发现广告';
+            } else if (detect.outcome === 'invalid') {
+                const pe = detect.parseError;
+                if (pe === 'empty') ruleText = '响应为空';
+                else if (pe === 'html') ruleText = '响应是 HTML';
+                else if (pe === 'not-m3u8') ruleText = '不是 m3u8';
+                else if (pe === 'empty-playlist') ruleText = '无分片';
+                else ruleText = '响应无效';
+            } else if (detect.outcome === 'parse-error') {
+                ruleText = '解析失败';
+            } else if (detect.seen) {
+                ruleText = '检查中…';
+            }
+
+            el.ruleInfo.textContent = ruleText;
 
             if (resp.lastUrl) {
                 el.lastUrlRow.style.display = '';
@@ -263,36 +271,23 @@
                 el.lastUrlRow.style.display = 'none';
             }
 
-            if (!currentWhitelistMode || currentInHardExclude) {
-                el.whitelistBtn.style.display = 'none';
-            } else if (currentInWhitelist) {
-                el.whitelistBtn.style.display = '';
-                el.whitelistBtn.disabled = false;
-                el.whitelistBtn.textContent = '移出白名单';
-                el.whitelistBtn.classList.remove('ghost');
-                el.whitelistBtn.classList.add('warn');
+            // 原生 HLS 按钮处理
+            if (resp.inHardExclude) {
+                el.hlsBtn.style.display = 'none';
+            } else if (currentHlsDisabled) {
+                el.hlsBtn.style.display = '';
+                el.hlsBtn.disabled = false;
+                el.hlsBtn.textContent = '恢复原生 HLS';
+                el.hlsBtn.classList.remove('ghost');
+                el.hlsBtn.classList.add('warn');
+            } else if (currentNativeHlsSuspect) {
+                el.hlsBtn.style.display = '';
+                el.hlsBtn.disabled = false;
+                el.hlsBtn.textContent = '禁用原生 HLS';
+                el.hlsBtn.classList.remove('warn');
+                el.hlsBtn.classList.add('ghost');
             } else {
-                el.whitelistBtn.style.display = '';
-                el.whitelistBtn.disabled = false;
-                el.whitelistBtn.textContent = '加入白名单';
-                el.whitelistBtn.classList.remove('warn');
-                el.whitelistBtn.classList.add('ghost');
-            }
-
-            if (currentInHardExclude) {
-                el.excludeBtn.style.display = 'none';
-            } else {
-                el.excludeBtn.style.display = '';
-                el.excludeBtn.disabled = false;
-                if (currentInExtraExclude) {
-                    el.excludeBtn.textContent = '移出排除名单';
-                    el.excludeBtn.classList.remove('ghost');
-                    el.excludeBtn.classList.add('warn');
-                } else {
-                    el.excludeBtn.textContent = '加入排除名单';
-                    el.excludeBtn.classList.remove('warn');
-                    el.excludeBtn.classList.add('ghost');
-                }
+                el.hlsBtn.style.display = 'none';
             }
 
             el.exportAdBtn.disabled = !resp.hasExportAd;
@@ -321,8 +316,6 @@
     el.powerBtn.addEventListener('click', async function () {
         el.powerBtn.disabled = true;
         el.modeToggleBtn.disabled = true;
-        el.whitelistBtn.disabled = true;
-        el.excludeBtn.disabled = true;
         try {
             const r = await browser.runtime.sendMessage({
                 type: 'toggleEnabled',
@@ -335,23 +328,17 @@
                 showToast('操作失败');
                 el.powerBtn.disabled = false;
                 el.modeToggleBtn.disabled = false;
-                el.whitelistBtn.disabled = false;
-                el.excludeBtn.disabled = false;
             }
         } catch (e) {
             showToast('操作失败');
             el.powerBtn.disabled = false;
             el.modeToggleBtn.disabled = false;
-            el.whitelistBtn.disabled = false;
-            el.excludeBtn.disabled = false;
         }
     });
 
     el.modeToggleBtn.addEventListener('click', async function () {
         el.modeToggleBtn.disabled = true;
         el.powerBtn.disabled = true;
-        el.whitelistBtn.disabled = true;
-        el.excludeBtn.disabled = true;
         try {
             const next = !currentWhitelistMode;
             await browser.storage.local.set({ whitelist_mode: next });
@@ -361,98 +348,36 @@
             showToast('操作失败');
             el.modeToggleBtn.disabled = false;
             el.powerBtn.disabled = false;
-            el.whitelistBtn.disabled = false;
-            el.excludeBtn.disabled = false;
         }
     });
 
-    el.whitelistBtn.addEventListener('click', async function () {
+    el.hlsBtn.addEventListener('click', async function () {
         if (!currentHostname) return;
-        el.whitelistBtn.disabled = true;
-        el.excludeBtn.disabled = true;
-        el.powerBtn.disabled = true;
-        el.modeToggleBtn.disabled = true;
+        el.hlsBtn.disabled = true;
         try {
-            const r = await browser.runtime.sendMessage({
-                type: 'toggleWhitelistCurrent',
+            const r = await sendMessageWithTimeout({
+                type: 'toggleDisableHlsCurrent',
                 host: currentHostname
-            });
+            }, 2000);
             if (r && r.ok) {
                 if (r.action === 'removed') {
                     if (r.removedHost === currentHostname) {
-                        showToast('已移出白名单，正在刷新…', 1500);
+                        showToast('已恢复原生 HLS，正在刷新…', 1500);
                     } else {
                         showToast('已移除覆盖域名 ' + r.removedHost + '，正在刷新…', 1800);
                     }
                 } else {
                     const n = (r.replacedHosts || []).length;
-                    showToast(n > 0 ? '已加入（取代 ' + n + ' 个子域），正在刷新…' : '已加入白名单，正在刷新…', 1800);
+                    showToast(n > 0 ? '已禁用原生 HLS（取代 ' + n + ' 个子域），正在刷新…' : '已禁用原生 HLS，正在刷新…', 1800);
                 }
                 await reloadAndClose(100);
-            } else if (r && r.action === 'hard-excluded') {
-                showToast('该域名在内置排除名单中，无法加入白名单', 3500);
-                el.whitelistBtn.disabled = false;
-                el.excludeBtn.disabled = false;
-                el.powerBtn.disabled = false;
-                el.modeToggleBtn.disabled = false;
             } else {
                 showToast('操作失败');
-                el.whitelistBtn.disabled = false;
-                el.excludeBtn.disabled = false;
-                el.powerBtn.disabled = false;
-                el.modeToggleBtn.disabled = false;
+                el.hlsBtn.disabled = false;
             }
         } catch (e) {
             showToast('操作失败');
-            el.whitelistBtn.disabled = false;
-            el.excludeBtn.disabled = false;
-            el.powerBtn.disabled = false;
-            el.modeToggleBtn.disabled = false;
-        }
-    });
-
-    el.excludeBtn.addEventListener('click', async function () {
-        if (!currentHostname) return;
-        el.excludeBtn.disabled = true;
-        el.whitelistBtn.disabled = true;
-        el.powerBtn.disabled = true;
-        el.modeToggleBtn.disabled = true;
-        try {
-            const r = await browser.runtime.sendMessage({
-                type: 'toggleExcludeCurrent',
-                host: currentHostname
-            });
-            if (r && r.ok) {
-                if (r.action === 'removed') {
-                    if (r.removedHost === currentHostname) {
-                        showToast('已移出排除名单，正在刷新…', 1500);
-                    } else {
-                        showToast('已移除覆盖域名 ' + r.removedHost + '，正在刷新…', 1800);
-                    }
-                } else {
-                    const n = (r.replacedHosts || []).length;
-                    showToast(n > 0 ? '已加入（取代 ' + n + ' 个子域），正在刷新…' : '已加入排除名单，正在刷新…', 1800);
-                }
-                await reloadAndClose(100);
-            } else if (r && r.action === 'hard-excluded') {
-                showToast('该域名已在内置排除名单中', 3000);
-                el.excludeBtn.disabled = false;
-                el.whitelistBtn.disabled = false;
-                el.powerBtn.disabled = false;
-                el.modeToggleBtn.disabled = false;
-            } else {
-                showToast('操作失败');
-                el.excludeBtn.disabled = false;
-                el.whitelistBtn.disabled = false;
-                el.powerBtn.disabled = false;
-                el.modeToggleBtn.disabled = false;
-            }
-        } catch (e) {
-            showToast('操作失败');
-            el.excludeBtn.disabled = false;
-            el.whitelistBtn.disabled = false;
-            el.powerBtn.disabled = false;
-            el.modeToggleBtn.disabled = false;
+            el.hlsBtn.disabled = false;
         }
     });
 

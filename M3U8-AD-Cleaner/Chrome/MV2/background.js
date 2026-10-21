@@ -165,6 +165,18 @@ function getHostname(url) {
     try { return new URL(url).hostname; } catch (e) { return ''; }
 }
 
+function getSourceKey(url) {
+    if (!url) return '';
+    try {
+        const u = new URL(url);
+        const parts = u.pathname.split('/');
+        parts.pop();
+        return u.host + '/' + parts.filter(Boolean).join('/');
+    } catch (e) {
+        return url;
+    }
+}
+
 function hostMatches(host, domainList) {
     if (!host) return false;
     const h = host.toLowerCase();
@@ -275,6 +287,7 @@ function ensureTabState(tabId) {
             lastUrl: '',
             lastProcessedUrl: '',
             lastProcessedTime: 0,
+            currentSourceKey: '',
             nativeHlsSuspect: false,
             seenM3U8: false,
             outcome: 'none',
@@ -291,6 +304,7 @@ function resetTabResult(tabId) {
     s.lastUrl = '';
     s.lastProcessedUrl = '';
     s.lastProcessedTime = 0;
+    s.currentSourceKey = '';
     s.nativeHlsSuspect = false;
     s.seenM3U8 = false;
     s.outcome = 'none';
@@ -420,7 +434,7 @@ chrome.tabs.onRemoved.addListener(function (tabId) {
 });
 
 // ============================================================
-// 7.1 主动注入：兜底 content_scripts 静态匹配的遗漏
+// 7.1 主动注入
 // ============================================================
 const __injectedFrames = new Set();
 
@@ -492,28 +506,12 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         return;
     }
 
-    // ---- content 上报 inject.js 的过滤结果 ----
     if (msg.type === 'm3u8Pending') {
         const tabId = sender.tab ? sender.tab.id : -1;
         if (tabId >= 0 && config.enabled) {
             const s = ensureTabState(tabId);
-            const prevData = getActiveData(tabId);
 
-            const urlChanged = !prevData || prevData.url !== msg.url;
-
-            if (urlChanged) {
-                setActiveData(tabId, {
-                    url: msg.url,
-                    ads: [],
-                    headLines: [],
-                    filtered: ''
-                });
-                s.filterCount = 0;
-                s.lastUrl = '';
-                s.outcome = 'pending';
-                s.parseError = '';
-                updateIcon(tabId);
-            } else if (s.outcome !== 'pending') {
+            if (s.filterCount === 0 && s.outcome !== 'pending') {
                 s.outcome = 'pending';
                 s.parseError = '';
             }
@@ -534,20 +532,21 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
             s.seenM3U8 = true;
             s.lastM3U8Url = url;
-            s.outcome = 'filtered';
-            s.parseError = '';
 
             if (msg.adsCount > 0) {
-                const urlChanged = s.lastProcessedUrl && s.lastProcessedUrl !== url;
+                const sameRecent = s.lastProcessedUrl === url &&
+                    (now - s.lastProcessedTime) < STATUS_DEDUP_WINDOW_MS;
 
-                if (urlChanged ||
-                    s.lastProcessedUrl !== url ||
-                    (now - s.lastProcessedTime) >= STATUS_DEDUP_WINDOW_MS) {
+                if (!sameRecent) {
                     s.lastProcessedUrl = url;
                     s.lastProcessedTime = now;
                     s.filterCount = msg.adsCount;
+                    s.lastRule = (msg.rules || []).join('+');
                     s.lastUrl = url;
+                    s.currentSourceKey = getSourceKey(url);
                     s.nativeHlsSuspect = false;
+                    s.outcome = 'filtered';
+                    s.parseError = '';
                     setActiveData(tabId, {
                         url: url,
                         ads: msg.ads || [],
@@ -571,45 +570,106 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         return;
     }
 
-    // ---- content 上报 inject.js 的状态（no-ads / invalid / parse-error） ----
     if (msg.type === 'm3u8Status') {
         const tabId = sender.tab ? sender.tab.id : -1;
         if (tabId >= 0 && config.enabled) {
             const s = ensureTabState(tabId);
+            const newSourceKey = getSourceKey(msg.url);
+            const hasExistingAds = s.filterCount > 0;
+            const sameLine = hasExistingAds && newSourceKey === s.currentSourceKey;
 
-            // 同 URL 已有 filtered 时，no-ads 不覆盖
-            if (msg.outcome === 'no-ads' &&
-                s.outcome === 'filtered' &&
-                s.lastM3U8Url === msg.url) {
+            s.seenM3U8 = true;
+            s.lastM3U8Url = msg.url;
+
+            if (msg.outcome === 'invalid' || msg.outcome === 'parse-error') {
+                s.outcome = msg.outcome;
+                s.parseError = msg.parseError || '';
+
+                if (!sameLine) {
+                    if (hasExistingAds) {
+                        exportCache.delete(tabId);
+                        s.filterCount = 0;
+                        s.lastUrl = '';
+                        updateIcon(tabId);
+                    }
+                    s.currentSourceKey = newSourceKey;
+                }
+
+                const err = msg.parseError || '';
+                
+                if (err === 'empty') {
+                    pushLog('error', '响应为空 | ' + msg.url);
+                } else if (err === 'html') {
+                    pushLog('error', '响应是 HTML（错误页或重定向） | ' + msg.url);
+                } else if (err === 'not-m3u8') {
+                    pushLog('error', '响应不是 m3u8 内容 | ' + msg.url);
+                } else if (err === 'empty-playlist') {
+                    pushLog('error', 'm3u8 无分片内容 | ' + msg.url);
+                } else {
+                    pushLog('error', '解析失败: ' + err + ' | ' + msg.url);
+                }
+
                 sendResponse({ ok: true });
                 return;
             }
 
-            s.seenM3U8 = true;
-            s.lastM3U8Url = msg.url;
-            s.outcome = msg.outcome;
-            s.parseError = msg.parseError || '';
+            if (msg.outcome === 'no-ads') {
+                if (sameLine) {
+                    sendResponse({ ok: true });
+                    return;
+                }
 
-            const prevData = getActiveData(tabId);
-            if (prevData && prevData.url !== msg.url) {
-                setActiveData(tabId, {
-                    url: msg.url,
-                    ads: [],
-                    headLines: [],
-                    filtered: ''
-                });
-                s.filterCount = 0;
-                s.lastUrl = '';
-                updateIcon(tabId);
+                if (hasExistingAds) {
+                    s.filterCount = 0;
+                    s.lastUrl = '';
+                    updateIcon(tabId);
+                }
+
+                if (msg.filtered) {
+                    setActiveData(tabId, {
+                        url: msg.url,
+                        ads: [],
+                        headLines: msg.headLines || [],
+                        filtered: msg.filtered
+                    });
+                } else {
+                    exportCache.delete(tabId);
+                }
+
+                s.currentSourceKey = newSourceKey;
+                s.outcome = 'no-ads';
+                s.parseError = '';
             }
 
-            if (msg.outcome === 'invalid' || msg.outcome === 'parse-error') {
-                const err = msg.parseError || '';
-                if (err === 'empty') pushLog('error', '响应为空 | ' + msg.url);
-                else if (err === 'html') pushLog('error', '响应是 HTML（错误页或重定向） | ' + msg.url);
-                else if (err === 'not-m3u8') pushLog('error', '响应不是 m3u8 内容 | ' + msg.url);
-                else if (err === 'empty-playlist') pushLog('error', 'm3u8 无分片内容 | ' + msg.url);
-                else if (err) pushLog('error', '解析失败: ' + err + ' | ' + msg.url);
+            sendResponse({ ok: true });
+        }
+        return;
+    }
+
+    if (msg.type === 'm3u8NetworkError') {
+        const tabId = sender.tab ? sender.tab.id : -1;
+        if (tabId >= 0 && config.enabled) {
+            const s = ensureTabState(tabId);
+            const newSourceKey = getSourceKey(msg.url);
+            const hasExistingAds = s.filterCount > 0;
+            const sameLine = hasExistingAds && newSourceKey === s.currentSourceKey;
+
+            s.seenM3U8 = true;
+            s.lastM3U8Url = msg.url;
+
+            if (!sameLine && hasExistingAds) {
+                exportCache.delete(tabId);
+                s.filterCount = 0;
+                s.lastUrl = '';
+                s.currentSourceKey = newSourceKey;
+                s.outcome = 'parse-error';
+                s.parseError = 'network-error';
+                updateIcon(tabId);
+                pushLog('error', '换线路请求失败，状态已清空 | ' + msg.url);
+            } else if (!hasExistingAds) {
+                s.currentSourceKey = newSourceKey;
+                s.outcome = 'parse-error';
+                s.parseError = 'network-error';
             }
         }
         sendResponse({ ok: true });
@@ -635,8 +695,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
             status: s ? s.status : 'unknown',
             filterCount: s ? s.filterCount : 0,
             lastUrl: s ? s.lastUrl : '',
-            hasExport: !!(data && data.ads && data.ads.length > 0),
+            hasExportAd: !!(data && data.ads && data.ads.length > 0),
+            hasExportClean: !!(data && data.filtered && data.filtered.length > 0),
             adLineCount: data && data.ads ? data.ads.length : 0,
+            lastRule: s ? s.lastRule : '',
             whitelistMode: config.whitelistMode,
             enabled: config.enabled,
             inWhitelist: host ? isInWhitelist(host) : false,
@@ -875,41 +937,8 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 });
 
 // ============================================================
-// 9. 导出
+// 9. 导出（只返回内容，由 popup 负责触发下载）
 // ============================================================
-let __pendingDownloadFilename = null;
-
-chrome.downloads.onDeterminingFilename.addListener(function (item, suggest) {
-    if (item.byExtensionId === chrome.runtime.id && __pendingDownloadFilename) {
-        const name = __pendingDownloadFilename;
-        __pendingDownloadFilename = null;
-        suggest({ filename: name, conflictAction: 'uniquify' });
-        return;
-    }
-});
-
-function downloadText(text, filename, callback) {
-    const blob = new Blob([text], { type: 'application/octet-stream' });
-    const blobUrl = URL.createObjectURL(blob);
-    __pendingDownloadFilename = filename;
-
-    chrome.downloads.download({
-        url: blobUrl,
-        filename: filename,
-        saveAs: true,
-        conflictAction: 'uniquify'
-    }, function (downloadId) {
-        if (chrome.runtime.lastError) {
-            console.error('[AD-BG] 下载失败:', chrome.runtime.lastError.message);
-            __pendingDownloadFilename = null;
-        }
-        setTimeout(function () {
-            try { URL.revokeObjectURL(blobUrl); } catch (e) {}
-        }, 60000);
-        if (callback) callback(downloadId);
-    });
-}
-
 function handleExportAd(tabId, sendResponse) {
     const data = getActiveData(tabId);
     if (!data) { sendResponse({ ok: false, error: '当前标签页没有可导出的数据' }); return; }
@@ -926,10 +955,8 @@ function handleExportAd(tabId, sendResponse) {
 
     const text = buildExportText(lines, data.url, true);
     const filename = timestampName('ad_segments');
-    downloadText(text, filename, function () {
-        pushLog('export', '导出广告片段: ' + filename + ' (' + data.ads.length + ' 行)');
-        sendResponse({ ok: true, filename: filename, count: data.ads.length });
-    });
+    pushLog('export', '准备导出广告片段: ' + filename + ' (' + data.ads.length + ' 行)');
+    sendResponse({ ok: true, filename: filename, text: text, count: data.ads.length });
 }
 
 function handleExportClean(tabId, sendResponse) {
@@ -940,10 +967,8 @@ function handleExportClean(tabId, sendResponse) {
     const lines = data.filtered.split('\n');
     const text = buildExportText(lines, data.url, false);
     const filename = timestampName('clean');
-    downloadText(text, filename, function () {
-        pushLog('export', '导出无广告 m3u8: ' + filename);
-        sendResponse({ ok: true, filename: filename });
-    });
+    pushLog('export', '准备导出无广告 m3u8: ' + filename);
+    sendResponse({ ok: true, filename: filename, text: text });
 }
 
 // ============================================================

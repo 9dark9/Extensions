@@ -1,5 +1,5 @@
 // ============================================================
-// M3U8 AD Cleaner - Content Script (Chrome MV2)
+// M3U8 AD Cleaner - Content Script (Chrome MV3)
 // ============================================================
 
 (function () {
@@ -14,7 +14,6 @@
 
     function setDebug(v) {
         DEBUG = !!v;
-        try { window.__M3U8AR_DEBUG__ = DEBUG; } catch (e) {}
         try {
             window.postMessage({
                 source: 'm3u8-ad-cleaner',
@@ -24,98 +23,201 @@
         } catch (e) {}
     }
 
+    // ---- 状态 ----
+    let extensionDisabled = false;
+    let lastQueriedUrl = '';
+    let iframesWatched = false;
+    let lastAppliedEnabled = null;   // B3：状态变化检测，避免级联广播风暴
+
+    // ============================================================
+    // 启用 / 禁用
+    // ============================================================
+    function suppressInjection() {
+        if (extensionDisabled) return;
+        extensionDisabled = true;
+        log('suppress injection @', location.href);
+        try {
+            window.postMessage({
+                source: 'm3u8-ad-cleaner',
+                type: 'disable'
+            }, '*');
+        } catch (e) {}
+    }
+
+    function resumeInjection() {
+        if (!extensionDisabled) return;
+        extensionDisabled = false;
+        log('resume injection @', location.href);
+        try {
+            window.postMessage({
+                source: 'm3u8-ad-cleaner',
+                type: 'enable'
+            }, '*');
+        } catch (e) {}
+    }
+
+    // ============================================================
+    // 状态查询与广播
+    // ============================================================
+    function queryAndApplyState(url) {
+        if (!url) url = location.href;
+        if (url === lastQueriedUrl) return;
+        lastQueriedUrl = url;
+
+        try {
+            chrome.runtime.sendMessage({ type: 'getContentState', url: url }, function (state) {
+                if (chrome.runtime.lastError) {
+                    warn('获取状态失败:', chrome.runtime.lastError.message);
+                    if (lastQueriedUrl === url) lastQueriedUrl = '';
+                    return;
+                }
+                if (!state) {
+                    if (lastQueriedUrl === url) lastQueriedUrl = '';
+                    return;
+                }
+
+                const nextEnabled = !!state.enabled;
+
+                if (nextEnabled) resumeInjection();
+                else suppressInjection();
+
+                // B3：只在状态实际变化时广播，避免级联风暴
+                if (lastAppliedEnabled !== nextEnabled) {
+                    lastAppliedEnabled = nextEnabled;
+                    broadcastStateChange();
+                    watchIframes();
+                }
+
+                if (state.hlsDisabled) {
+                    try {
+                        window.postMessage({
+                            source: 'm3u8-ad-cleaner',
+                            type: 'setDisableHls',
+                            value: true
+                        }, '*');
+                    } catch (e) {}
+                }
+
+                // 查询期间 URL 变了：重新查询
+                if (location.href !== url) {
+                    lastQueriedUrl = '';
+                    queryAndApplyState(location.href);
+                }
+            });
+        } catch (e) {
+            if (lastQueriedUrl === url) lastQueriedUrl = '';
+            warn('查询状态异常:', e);
+        }
+    }
+
+    // ============================================================
+    // 广播（B3：不再限制顶层，所有 frame 都向下广播）
+    // 通过 lastAppliedEnabled 防级联：只有状态实际变化才广播
+    // ============================================================
+    function broadcastStateChange() {
+        let iframes;
+        try {
+            iframes = document.querySelectorAll('iframe');
+        } catch (e) { return; }
+        for (let i = 0; i < iframes.length; i++) {
+            try {
+                const w = iframes[i].contentWindow;
+                if (w) {
+                    w.postMessage({ __m3u8ar: true, type: 'whitelistPass' }, '*');
+                }
+            } catch (e) {}
+        }
+    }
+
+    function watchIframes() {
+        if (iframesWatched) return;
+        iframesWatched = true;
+        try {
+            let timer = null;
+            const mo = new MutationObserver(function () {
+                if (timer) return;
+                timer = setTimeout(function () {
+                    timer = null;
+                    broadcastStateChange();
+                }, 200);
+            });
+            const start = function () {
+                if (document.body) {
+                    mo.observe(document.body, { childList: true, subtree: true });
+                }
+            };
+            if (document.body) start();
+            else document.addEventListener('DOMContentLoaded', start, { once: true });
+        } catch (e) {}
+    }
+
+    // ============================================================
+    // 接收父框架通知：重新查询 background
+    // ============================================================
+    window.addEventListener('message', function (e) {
+        const d = e.data;
+        if (!d || d.__m3u8ar !== true || d.type !== 'whitelistPass') return;
+
+        lastQueriedUrl = '';
+        queryAndApplyState(location.href);
+    });
+
+    // ============================================================
+    // 存储变化监听
+    // ============================================================
     chrome.storage.onChanged.addListener(function (changes, area) {
         if (area !== 'local') return;
         if (changes.debug) setDebug(changes.debug.newValue);
-    });
-
-    // ============================================================
-    // 计算用于查询状态的 host
-    //   1) location.ancestorOrigins（Chrome 特有）
-    //   2) document.referrer 兜底
-    //   3) 自身 hostname 兜底
-    // ============================================================
-    function getQueryHost() {
-        const selfHost = location.hostname;
-
-        if (window === window.top) return selfHost;
-
-        try {
-            const ao = location.ancestorOrigins;
-            if (ao && ao.length > 0) {
-                for (let i = ao.length - 1; i >= 0; i--) {
-                    const origin = ao[i];
-                    if (origin && origin !== 'null') {
-                        try {
-                            const h = new URL(origin).hostname;
-                            if (h) return h;
-                        } catch (e) {}
-                    }
-                }
-            }
-        } catch (e) {}
-
-        try {
-            const ref = document.referrer || '';
-            if (ref) {
-                const refHost = new URL(ref).hostname;
-                if (refHost) return refHost;
-            }
-        } catch (e) {}
-
-        return selfHost;
-    }
-
-    const host = location.hostname;
-    const queryHost = getQueryHost();
-
-    let injected = false;
-    let parentPassed = false;
-    let hlsDisabled = false;
-    let extensionDisabled = false;
-
-    function injectScript(src, onload) {
-        const script = document.createElement('script');
-        script.src = src;
-        script.onload = function () {
-            this.remove();
-            if (onload) onload();
-        };
-        script.onerror = function () {
-            console.error('[AD-CS] 注入失败:', src);
-            this.remove();
-        };
-        (document.head || document.documentElement).appendChild(script);
-    }
-
-    function injectAll() {
-        if (injected) return;
-        if (extensionDisabled) return;
-        injected = true;
-        log('开始注入 @', location.href, 'frame:', window === window.top ? 'top' : 'iframe');
-        injectScript(chrome.runtime.getURL('filter.js'), function () {
-            log('filter.js 已加载');
-            const injectUrl = chrome.runtime.getURL('inject.js') +
-                '?disableHls=' + (hlsDisabled ? '1' : '0');
-            injectScript(injectUrl);
-        });
-    }
-
-    chrome.runtime.onMessage.addListener(function (msg) {
-        if (!msg || msg.type !== 'extensionToggled') return;
-        if (msg.enabled === false) {
-            extensionDisabled = true;
-            injected = true;
-            try {
-                window.postMessage({
-                    source: 'm3u8-ad-cleaner',
-                    type: 'disable'
-                }, '*');
-            } catch (e) {}
+        if (changes.disable_hls_hosts) checkDisableHlsAndNotify();
+        if (changes.whitelist_mode || changes.whitelist_hosts ||
+            changes.extra_exclude_hosts || changes.enabled) {
+            lastQueriedUrl = '';
+            queryAndApplyState(location.href);
         }
     });
 
-    // 转发 inject.js 的消息给 background
+    // ============================================================
+    // 禁用原生 HLS 相关
+    // ============================================================
+    function checkDisableHlsAndNotify() {
+        const h = location.hostname.toLowerCase();
+        if (!h) return;
+        chrome.storage.local.get({ disable_hls_hosts: [] }, function (data) {
+            const list = Array.isArray(data.disable_hls_hosts) ? data.disable_hls_hosts : [];
+            let hit = false;
+            for (let i = 0; i < list.length; i++) {
+                const d = String(list[i]).toLowerCase();
+                if (d && (h === d || h.endsWith('.' + d))) { hit = true; break; }
+            }
+            if (!hit) return;
+            try {
+                window.postMessage({
+                    source: 'm3u8-ad-cleaner',
+                    type: 'setDisableHls',
+                    value: true
+                }, '*');
+            } catch (e) {}
+        });
+    }
+
+    checkDisableHlsAndNotify();
+
+    // ============================================================
+    // 扩展全局启用/禁用切换
+    // ============================================================
+    chrome.runtime.onMessage.addListener(function (msg) {
+        if (!msg || msg.type !== 'extensionToggled') return;
+        if (msg.enabled === false) {
+            suppressInjection();
+        } else {
+            lastQueriedUrl = '';
+            queryAndApplyState(location.href);
+        }
+    });
+
+    // ============================================================
+    // 业务消息转发（filtered / status / pending / networkError）
+    // ============================================================
     window.addEventListener('message', function (e) {
         if (e.source !== window) return;
         const d = e.data;
@@ -150,6 +252,8 @@
                     outcome: d.outcome
                 };
                 if (d.parseError) msg.parseError = d.parseError;
+                if (d.filtered) msg.filtered = d.filtered;
+                if (d.headLines) msg.headLines = d.headLines;
                 chrome.runtime.sendMessage(msg, function () {
                     if (chrome.runtime.lastError) {}
                 });
@@ -172,69 +276,51 @@
             }
             return;
         }
-    });
 
-    // ============================================================
-    // 白名单广播
-    // ============================================================
-    function broadcastWhitelistPass() {
-        if (extensionDisabled) return;
-        let iframes;
-        try {
-            iframes = document.querySelectorAll('iframe');
-        } catch (e) { return; }
-        for (let i = 0; i < iframes.length; i++) {
+        if (d.type === 'm3u8NetworkError') {
             try {
-                const w = iframes[i].contentWindow;
-                if (w) {
-                    w.postMessage({ __m3u8ar: true, type: 'whitelistPass' }, '*');
-                }
-            } catch (e) {}
+                chrome.runtime.sendMessage({
+                    type: 'm3u8NetworkError',
+                    url: d.url
+                }, function () {
+                    if (chrome.runtime.lastError) {}
+                });
+            } catch (err) {
+                console.error('[AD-CS] 转发失败:', err);
+            }
+            return;
         }
-    }
-
-    function watchIframes() {
-        try {
-            let timer = null;
-            const mo = new MutationObserver(function () {
-                if (timer) return;
-                timer = setTimeout(function () {
-                    timer = null;
-                    if (extensionDisabled) return;
-                    broadcastWhitelistPass();
-                }, 200);
-            });
-            const start = function () {
-                if (document.body) {
-                    mo.observe(document.body, { childList: true, subtree: true });
-                }
-            };
-            if (document.body) start();
-            else document.addEventListener('DOMContentLoaded', start, { once: true });
-        } catch (e) {}
-    }
-
-    window.addEventListener('message', function (e) {
-        const d = e.data;
-        if (!d || d.__m3u8ar !== true || d.type !== 'whitelistPass') return;
-        if (parentPassed) return;
-        if (extensionDisabled) return;
-
-        parentPassed = true;
-        log('收到父框架放行信号:', location.href);
-
-        injectAll();
-        broadcastWhitelistPass();
-        watchIframes();
     });
 
     // ============================================================
-    // 未检测到 m3u8 的提示（含原生 HLS 检测）
+    // SPA URL 变化监听（inject.js 发来 urlChange）
+    // ============================================================
+    window.addEventListener('message', function (e) {
+        if (e.source !== window) return;
+        const d = e.data;
+        if (!d || d.source !== 'm3u8-ad-cleaner') return;
+        if (d.type === 'urlChange') {
+            queryAndApplyState(location.href);
+        }
+    });
+
+    // 定时兜底检查（O3：页面隐藏时跳过）
+    let lastCheckUrl = location.href;
+    setInterval(function () {
+        if (document.hidden) return;
+        if (location.href !== lastCheckUrl) {
+            lastCheckUrl = location.href;
+            queryAndApplyState(location.href);
+        }
+    }, 800);
+
+    // ============================================================
+    // 无 m3u8 提示检测
     // ============================================================
     function setupNoM3U8Detection() {
         if (window !== window.top) return;
 
-        const HINT_DELAY_MS = 8000;
+        const HINT_DELAY_MS = 2000;
         const POLL_INTERVAL_MS = 1000;
 
         const processedUrls = new Set();
@@ -376,7 +462,7 @@
                     if (processedUrls.has(url) || hintedUrls.has(url)) return;
                     hintedUrls.add(url);
 
-                    if (/\.m3u8(\?|#|$)/i.test(url) && !hlsDisabled) {
+                    if (/\.m3u8(\?|#|$)/i.test(url)) {
                         notifyNativeHlsSuspect();
                     }
 
@@ -425,6 +511,10 @@
             if (processedUrls.has(url)) return;
             if (hintedUrls.has(url)) return;
 
+            if (/\.m3u8(\?|#|$)/i.test(url)) {
+                notifyNativeHlsSuspect();
+            }
+
             if (/\.mpd(\?|#|$)/i.test(url) || /\.mp4(\?|#|$)/i.test(url)) {
                 hintedUrls.add(url);
                 showHint(buildHintMessage(url, m));
@@ -458,49 +548,14 @@
     // ============================================================
     // 主流程
     // ============================================================
+    const host = location.hostname;
+    log('注入 @', host);
 
-    log('注入 @', host, 'queryHost=', queryHost);
-
-    if (!queryHost) {
-        chrome.storage.local.get({ debug: false }, function (dbg) {
-            setDebug(dbg.debug);
-            if (extensionDisabled) return;
-            injectAll();
-            broadcastWhitelistPass();
-            watchIframes();
-            setupNoM3U8Detection();
-        });
-        return;
-    }
+    setupNoM3U8Detection();
 
     chrome.storage.local.get({ debug: false }, function (dbg) {
         setDebug(dbg.debug);
-
-        try {
-            chrome.runtime.sendMessage({ type: 'getContentState', host: queryHost }, function (state) {
-                if (extensionDisabled) return;
-                if (chrome.runtime.lastError) {
-                    warn('获取状态失败，默认注入:', chrome.runtime.lastError.message);
-                    injectAll();
-                    setupNoM3U8Detection();
-                    return;
-                }
-                if (state && state.enabled) {
-                    hlsDisabled = !!state.hlsDisabled;
-                    injectAll();
-                    broadcastWhitelistPass();
-                    watchIframes();
-                    setupNoM3U8Detection();
-                } else {
-                    log('本 frame 未启用:', queryHost, state && state.reason);
-                }
-            });
-        } catch (e) {
-            if (extensionDisabled) return;
-            warn('获取状态失败，默认注入:', e);
-            injectAll();
-            setupNoM3U8Detection();
-        }
+        queryAndApplyState(location.href);
     });
 
 })();

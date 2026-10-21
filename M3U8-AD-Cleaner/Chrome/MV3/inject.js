@@ -16,61 +16,106 @@
     } catch (e) {}
     function log(...args) { if (DEBUG) console.log('[AD-PAGE]', ...args); }
 
+    let disableHls = false;
+
     try {
         window.addEventListener('message', function (e) {
             if (e.source !== window) return;
             const d = e.data;
             if (!d || d.source !== 'm3u8-ad-cleaner') return;
-            if (d.type === 'debug') DEBUG = !!d.value;
-            if (d.type === 'disable') __m3u8ar_disabled = true;
+
+            if (d.type === 'debug') {
+                DEBUG = !!d.value;
+            } else if (d.type === 'disable') {
+                __m3u8ar_disabled = true;
+            } else if (d.type === 'enable') {
+                __m3u8ar_disabled = false;
+                log('恢复启用');
+            } else if (d.type === 'setDisableHls') {
+                disableHls = !!d.value;
+                log('运行时切换 disableHls=' + disableHls);
+            }
         });
     } catch (e) {}
 
-    // 从 query 参数读取 disableHls 标记
-    let disableHls = false;
-    try {
-        const scriptUrl = (document.currentScript && document.currentScript.src) || '';
-        if (/[?&]disableHls=1(?:&|$)/.test(scriptUrl)) {
-            disableHls = true;
-        }
-    } catch (e) {}
-
-    if (disableHls) {
+    // ---- canPlayType 代理 ----
+    (function installCanPlayTypeProxy() {
         try {
             const proto = HTMLMediaElement.prototype;
+            if (proto.__m3u8ar_cpt) return;
             const orig = proto.canPlayType;
-            if (typeof orig === 'function' && !proto.__m3u8ar_cpt) {
-                proto.__m3u8ar_cpt = true;
-                const proxy = function (type) {
-                    if (type && /mpegurl|m3u8/i.test(type)) return '';
-                    return orig.apply(this, arguments);
-                };
-                try {
-                    Object.defineProperty(proxy, 'name', {
-                        value: 'canPlayType', configurable: true
-                    });
-                } catch (e) {}
-                try {
-                    Object.defineProperty(proxy, 'length', {
-                        value: orig.length, configurable: true
-                    });
-                } catch (e) {}
-                proto.canPlayType = proxy;
-                log('已禁用原生 HLS（canPlayType 已覆盖）');
-            }
+            if (typeof orig !== 'function') return;
+
+            proto.__m3u8ar_orig_cpt = orig;
+
+            const proxy = function (type) {
+                if (disableHls && type && /mpegurl|m3u8/i.test(type)) return '';
+                return proto.__m3u8ar_orig_cpt.apply(this, arguments);
+            };
+            try {
+                Object.defineProperty(proxy, 'name', { value: 'canPlayType', configurable: true });
+                Object.defineProperty(proxy, 'length', { value: orig.length, configurable: true });
+            } catch (e) {}
+
+            proto.canPlayType = proxy;
+            proto.__m3u8ar_cpt = true;
+            log('canPlayType 代理已安装，初始 disableHls=' + disableHls);
         } catch (e) {
-            console.error('[AD-PAGE] 覆盖 canPlayType 失败:', e);
+            console.error('[AD-PAGE] 安装 canPlayType 代理失败:', e);
         }
-    }
+    })();
+
+    // ---- SPA URL 变化监听 ----
+    (function installUrlChangeWatcher() {
+        try {
+            const notify = function () {
+                try {
+                    window.postMessage({
+                        source: 'm3u8-ad-cleaner',
+                        type: 'urlChange'
+                    }, '*');
+                } catch (e) {}
+            };
+
+            const origPush = history.pushState;
+            if (typeof origPush === 'function') {
+                history.pushState = function () {
+                    const r = origPush.apply(this, arguments);
+                    notify();
+                    return r;
+                };
+            }
+
+            const origReplace = history.replaceState;
+            if (typeof origReplace === 'function') {
+                history.replaceState = function () {
+                    const r = origReplace.apply(this, arguments);
+                    notify();
+                    return r;
+                };
+            }
+
+            window.addEventListener('popstate', notify);
+            window.addEventListener('hashchange', notify);
+            log('URL 变化监听已安装');
+        } catch (e) {
+            console.error('[AD-PAGE] 安装 URL 变化监听失败:', e);
+        }
+    })();
 
     if (!window.M3U8Filter) {
         console.error('[AD-PAGE] M3U8Filter 未加载');
         return;
     }
 
-    function isM3U8Url(url) {
+    function looksLikeM3U8(url) {
         if (!url || typeof url !== 'string') return false;
-        return /\.m3u8([?#&]|$)/i.test(url);
+        let end = url.length;
+        const q = url.indexOf('?');
+        if (q !== -1 && q < end) end = q;
+        const h = url.indexOf('#');
+        if (h !== -1 && h < end) end = h;
+        return /\.m3u8$/i.test(url.slice(0, end));
     }
 
     function notifyFiltered(url, result) {
@@ -101,7 +146,7 @@
         } catch (e) {}
     }
 
-    function notifyStatus(url, outcome, parseError) {
+    function notifyStatus(url, outcome, parseError, filtered, headLines) {
         if (__m3u8ar_disabled) return;
         try {
             const msg = {
@@ -111,7 +156,20 @@
                 outcome: outcome
             };
             if (parseError) msg.parseError = parseError;
+            if (filtered) msg.filtered = filtered;
+            if (headLines && headLines.length) msg.headLines = headLines;
             window.postMessage(msg, '*');
+        } catch (e) {}
+    }
+
+    function notifyNetworkError(url) {
+        if (__m3u8ar_disabled) return;
+        try {
+            window.postMessage({
+                source: 'm3u8-ad-cleaner',
+                type: 'm3u8NetworkError',
+                url: url
+            }, '*');
         } catch (e) {}
     }
 
@@ -119,7 +177,6 @@
         const stats = result.stats;
         if (!stats) return;
 
-        // master：不更新状态（后面紧跟 media playlist）
         if (stats.master) return;
 
         if (stats.error) {
@@ -139,7 +196,7 @@
         if (result.changed) {
             notifyFiltered(url, result);
         } else {
-            notifyStatus(url, 'no-ads');
+            notifyStatus(url, 'no-ads', null, result.modified, result.headLines);
         }
     }
 
@@ -153,11 +210,10 @@
                 return origFetch.apply(this, arguments);
             }
             const url = typeof input === 'string' ? input : (input && input.url) || '';
-            if (!isM3U8Url(url)) {
+            if (!looksLikeM3U8(url)) {
                 return origFetch.apply(this, arguments);
             }
 
-            // 请求发出，立即通知 pending
             notifyPending(url);
 
             log('fetch 命中:', url);
@@ -185,9 +241,15 @@
                         headers: headers
                     });
                 }).catch(function (e) {
-                    console.error('[AD-PAGE] fetch 处理失败:', e);
+                    console.error('[AD-PAGE] fetch text 失败:', e);
                     return response;
                 });
+            }).catch(function (e) {
+                if (!__m3u8ar_disabled) {
+                    log('fetch 网络失败:', url);
+                    notifyNetworkError(url);
+                }
+                throw e;
             });
         };
     }
@@ -201,6 +263,12 @@
     const urlMap = new WeakMap();
     const respCache = new WeakMap();
 
+    // O5 修复：descriptor 在模块级缓存，避免每次 send 重复取
+    const RESP_TEXT_DESC = Object.getOwnPropertyDescriptor(
+        XMLHttpRequest.prototype, 'responseText'
+    );
+    const ORIG_RESP_TEXT_GET = RESP_TEXT_DESC && RESP_TEXT_DESC.get;
+
     XHRProto.open = function (method, url) {
         urlMap.set(this, url);
         return origOpen.apply(this, arguments);
@@ -212,25 +280,39 @@
         }
         const xhr = this;
         const url = urlMap.get(xhr) || '';
-        if (!isM3U8Url(url)) {
+        if (!looksLikeM3U8(url)) {
             return origSend.apply(this, arguments);
         }
-
-        // 请求发出，立即通知 pending
         notifyPending(url);
 
+        try {
+            let networkErrNotified = false;
+            const onNetworkErr = function () {
+                if (networkErrNotified) return;
+                networkErrNotified = true;
+                if (!__m3u8ar_disabled) {
+                    log('XHR 网络失败:', url);
+                    notifyNetworkError(url);
+                }
+            };
+            // O2 修复：{ once: true } 避免复用 XHR 时叠加监听器
+            xhr.addEventListener('error', onNetworkErr, { once: true });
+            xhr.addEventListener('timeout', onNetworkErr, { once: true });
+        } catch (e) {}
+
         log('XHR 命中:', url);
-        const desc = Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText');
-        const origGet = desc && desc.get;
-        if (origGet) {
+        if (ORIG_RESP_TEXT_GET) {
             try {
                 Object.defineProperty(xhr, 'responseText', {
                     get: function () {
-                        if (__m3u8ar_disabled) return origGet.call(xhr);
+                        if (__m3u8ar_disabled) return ORIG_RESP_TEXT_GET.call(xhr);
                         const cached = respCache.get(xhr);
                         if (cached !== undefined) return cached;
 
-                        const text = origGet.call(xhr);
+                        // B4 修复：不吞异常，保持标准语义
+                        // （readyState < 3 或 responseType 不匹配时，原 getter 会抛 InvalidStateError）
+                        const text = ORIG_RESP_TEXT_GET.call(xhr);
+
                         if (!text) {
                             respCache.set(xhr, text);
                             return text;

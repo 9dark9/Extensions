@@ -1,5 +1,5 @@
 // ============================================================
-// M3U8 AD Cleaner - Background Script
+// M3U8 AD Cleaner - Background Script (Firefox MV2)
 // ============================================================
 
 'use strict';
@@ -212,11 +212,29 @@ browser.webNavigation.onCommitted.addListener(function (details) {
 // ============================================================
 function looksLikeM3U8(url) {
     if (!url || typeof url !== 'string') return false;
-    return /\.m3u8([?#&]|$)/i.test(url);
+    let end = url.length;
+    const q = url.indexOf('?');
+    if (q !== -1 && q < end) end = q;
+    const h = url.indexOf('#');
+    if (h !== -1 && h < end) end = h;
+    return /\.m3u8$/i.test(url.slice(0, end));
 }
 
 function getHostname(url) {
     try { return new URL(url).hostname; } catch (e) { return ''; }
+}
+
+// ★ 核心：源标识 —— 提取 host + 目录路径（去掉文件名和 query）
+function getSourceKey(url) {
+    if (!url) return '';
+    try {
+        const u = new URL(url);
+        const parts = u.pathname.split('/');
+        parts.pop();
+        return u.host + '/' + parts.filter(Boolean).join('/');
+    } catch (e) {
+        return url;
+    }
 }
 
 function getPageHost(details) {
@@ -370,6 +388,7 @@ function ensureTabState(tabId) {
             lastUrl: '',
             lastProcessedUrl: '',
             lastProcessedTime: 0,
+            currentSourceKey: '',
             seenM3U8: false,
             seenMedia: false,
             outcome: 'none',
@@ -387,12 +406,14 @@ function resetTabResult(tabId) {
     s.lastUrl = '';
     s.lastProcessedUrl = '';
     s.lastProcessedTime = 0;
+    s.currentSourceKey = '';
     s.seenM3U8 = false;
     s.seenMedia = false;
     s.outcome = 'none';
     s.parseError = '';
     s.lastM3U8Url = '';
     exportCache.delete(tabId);
+    diag('resetTabResult: tab=' + tabId);
 }
 
 const __iconTimer = new Map();
@@ -589,7 +610,6 @@ browser.webRequest.onBeforeRequest.addListener(
     function (details) {
         const tabId = details.tabId;
 
-        // 记录 media 类型请求（无论 URL 是否 m3u8）
         if (details.type === 'media' && tabId >= 0) {
             const s = ensureTabState(tabId);
             s.seenMedia = true;
@@ -627,7 +647,6 @@ browser.webRequest.onBeforeRequest.addListener(
             let ads = [];
             let parseError = '';
 
-            // 调试模式：输出疑似非 m3u8 响应的前 128 字符
             if (!buffer || buffer.slice(0, 64).indexOf('#EXTM3U') === -1) {
                 warn('前128字符:', JSON.stringify(buffer.slice(0, 128)));
             }
@@ -655,24 +674,27 @@ browser.webRequest.onBeforeRequest.addListener(
                     }
                 }
 
-                // master playlist 不处理不提示
+                // 无论 changed 与否，都保存 headLines（供无广告时导出）
+                if (!result.changed) {
+                    headLines = result.headLines || [];
+                }
+
                 if (stats && stats.master) {
                     // master：不处理不提示
                 } else if (stats && stats.error) {
                     parseError = stats.error;
                     if (parseError === 'empty') {
-                        //pushLog('error', '响应为空 | ' + details.url);
+                        pushLog('error', '响应为空 | ' + details.url);
                     } else if (parseError === 'html') {
-                        //pushLog('error', '响应是 HTML（错误页或重定向） | ' + details.url);
+                        pushLog('error', '响应是 HTML（错误页或重定向） | ' + details.url);
                     } else if (parseError === 'not-m3u8') {
-                        //pushLog('error', '响应不是 m3u8 内容 | ' + details.url);
+                        pushLog('error', '响应不是 m3u8 内容 | ' + details.url);
                     } else if (parseError === 'empty-playlist') {
-                        //pushLog('error', 'm3u8 无分片内容 | ' + details.url);
+                        pushLog('error', 'm3u8 无分片内容 | ' + details.url);
                     } else {
                         pushLog('error', '解析失败: ' + parseError + ' | ' + details.url);
                     }
                 }
-                // 无错误、无变化：静默（不再记录"已检查，未发现广告"）
             } catch (e) {
                 console.error('[AD-BG] 过滤失败:', e);
                 parseError = String(e.message || e);
@@ -693,71 +715,123 @@ browser.webRequest.onBeforeRequest.addListener(
                 }
 
                 if (!config.enabled) return;
-
                 if (stats && stats.master) return;
 
                 const s = ensureTabState(effectiveTabId);
                 const url = details.url;
                 const now = Date.now();
                 const hasNewAds = changed && ads.length > 0;
+                const newSourceKey = getSourceKey(url);
+                const hasExistingAds = s.filterCount > 0;
+                const sameLine = hasExistingAds && newSourceKey === s.currentSourceKey;
 
                 s.seenM3U8 = true;
                 s.lastM3U8Url = url;
 
-                if (parseError === 'empty' || parseError === 'html' ||
-                    parseError === 'not-m3u8' || parseError === 'empty-playlist') {
-                    s.outcome = 'invalid';
-                    s.parseError = parseError;
-                } else if (parseError) {
-                    s.outcome = 'parse-error';
-                    s.parseError = parseError;
-                } else if (hasNewAds) {
-                    s.outcome = 'filtered';
-                } else {
-                    s.outcome = 'no-ads';
-                }
+                diag('applyResult: tab=' + effectiveTabId +
+                    ' changed=' + changed +
+                    ' adsLen=' + ads.length +
+                    ' parseError=' + (parseError || '') +
+                    ' newSource=' + newSourceKey +
+                    ' curSource=' + s.currentSourceKey +
+                    ' sameLine=' + sameLine);
 
-                // URL 变化时绕过 5 秒去重
-                const urlChanged = s.lastProcessedUrl && s.lastProcessedUrl !== url;
-
-                if (!urlChanged &&
-                    s.lastProcessedUrl === url &&
-                    (now - s.lastProcessedTime) < STATUS_DEDUP_WINDOW_MS) {
-                    if (!hasNewAds) {
-                        diag('去重跳过: tab=' + effectiveTabId);
-                        return;
+                // ============================================
+                // 分支 A：解析错误
+                // ============================================
+                if (parseError) {
+                    let outcomeType;
+                    if (parseError === 'empty' || parseError === 'html' ||
+                        parseError === 'not-m3u8' || parseError === 'empty-playlist') {
+                        outcomeType = 'invalid';
+                    } else {
+                        outcomeType = 'parse-error';
                     }
-                    diag('去重放行: tab=' + effectiveTabId);
+
+                    s.outcome = outcomeType;
+                    s.parseError = parseError;
+
+                    // 不同源 + 有历史记录 → 清空
+                    if (hasExistingAds && !sameLine) {
+                        exportCache.delete(effectiveTabId);
+                        s.filterCount = 0;
+                        s.lastUrl = '';
+                        s.currentSourceKey = newSourceKey;
+                        updateIcon(effectiveTabId);
+                        diag('  → 换源+错误：清空');
+                    } else if (!hasExistingAds) {
+                        s.currentSourceKey = newSourceKey;
+                        diag('  → 无历史+错误：记录源');
+                    } else {
+                        diag('  → 同源错误：保持');
+                    }
+                    return;
                 }
 
-                const prevUrl = s.lastProcessedUrl;
-                const isNewLine = prevUrl && prevUrl !== url;
-
+                // ============================================
+                // 去重：同 URL 5 秒内
+                // ============================================
+                const sameRecent = s.lastProcessedUrl === url &&
+                    (now - s.lastProcessedTime) < STATUS_DEDUP_WINDOW_MS;
+                if (sameRecent && !hasNewAds) {
+                    diag('  → 去重跳过');
+                    return;
+                }
                 s.lastProcessedUrl = url;
                 s.lastProcessedTime = now;
 
-                if (!parseError) {
+                // ============================================
+                // 分支 B：有广告 → 无条件更新
+                // ============================================
+                if (hasNewAds) {
                     setActiveData(effectiveTabId, {
                         url: url,
                         ads: ads,
                         headLines: headLines,
                         filtered: output
                     });
+                    s.filterCount = ads.length;
+                    s.lastRule = (stats.rules || []).join('+');
+                    s.lastUrl = url;
+                    s.currentSourceKey = newSourceKey;
+                    s.outcome = 'filtered';
+                    s.parseError = '';
+                    updateIcon(effectiveTabId);
+                    diag('  → filtered (' + ads.length + ' 行)');
+                    return;
                 }
 
-                if (hasNewAds) {
-                    s.filterCount = ads.length;
-                    s.lastUrl = url;
-                    updateIcon(effectiveTabId);
-                    diag('已记录: tab=' + effectiveTabId + ' ads=' + ads.length);
-                } else if (isNewLine && s.filterCount > 0) {
+                // ============================================
+                // 分支 C：无广告
+                // ============================================
+                if (sameLine) {
+                    // 同源（音轨、切清晰度）→ 完全保留
+                    diag('  → 同源无广告：保持 filtered');
+                    return;
+                }
+
+                // 不同源（或无历史记录）
+                // 1) 清 badge（若之前有 N）
+                if (hasExistingAds) {
                     s.filterCount = 0;
                     s.lastUrl = '';
                     updateIcon(effectiveTabId);
-                    diag('线路切换，无广告: tab=' + effectiveTabId);
-                } else {
-                    diag('本次无变化: tab=' + effectiveTabId);
+                    diag('  → 换源无广告：清空 badge');
                 }
+
+                // 2) 保存当前 m3u8 内容（无广告版本）供导出
+                //    ads 为空 → "导出广告片段"按钮禁用
+                //    filtered 非空 → "导出无广告 m3u8"按钮可用
+                setActiveData(effectiveTabId, {
+                    url: url,
+                    ads: [],
+                    headLines: headLines,
+                    filtered: output
+                });
+                s.currentSourceKey = newSourceKey;
+                s.outcome = 'no-ads';
+                s.parseError = '';
+                diag('  → no-ads（保留 m3u8 供导出）');
             };
 
             if (tabId >= 0) {
@@ -784,6 +858,26 @@ browser.webRequest.onBeforeRequest.addListener(
             if (err.indexOf('redirected') !== -1) return;
             console.error('[AD-BG] StreamFilter 错误:', filter.error);
             pushLog('error', 'StreamFilter 错误: ' + err);
+
+            if (tabId < 0 || !config.enabled) return;
+
+            const s = ensureTabState(tabId);
+            if (s.filterCount === 0) return;
+
+            const failedSourceKey = getSourceKey(details.url);
+            if (failedSourceKey !== s.currentSourceKey) {
+                exportCache.delete(tabId);
+                s.filterCount = 0;
+                s.lastUrl = '';
+                s.currentSourceKey = failedSourceKey;
+                s.outcome = 'parse-error';
+                s.parseError = 'network-error';
+                updateIcon(tabId);
+                pushLog('error', '换线路请求失败，状态已清空 | ' + details.url);
+                diag('filter.onerror: 换源失败清空 tab=' + tabId);
+            } else {
+                diag('filter.onerror: 同源失败，保持 tab=' + tabId);
+            }
         };
     },
     {
@@ -819,135 +913,12 @@ browser.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     if (msg.type === 'checkSeen') {
         const tabId = sender.tab ? sender.tab.id : -1;
         const s = tabId >= 0 ? tabState.get(tabId) : null;
-        const data = getActiveData(tabId);
         sendResponse({
             seen: !!(s && s.seenM3U8),
             seenMedia: !!(s && s.seenMedia),
             outcome: s ? s.outcome : 'none',
-            parseError: s ? s.parseError : '',
+            parseError: s ? s.parseError : ''
         });
-        return;
-    }
-    
-    if (msg.type === 'm3u8Pending') {
-        const tabId = sender.tab ? sender.tab.id : -1;
-        if (tabId >= 0 && config.enabled) {
-            const s = ensureTabState(tabId);
-            const prevData = getActiveData(tabId);
-
-            const urlChanged = !prevData || prevData.url !== msg.url;
-
-            if (urlChanged) {
-                setActiveData(tabId, {
-                    url: msg.url,
-                    ads: [],
-                    headLines: [],
-                    filtered: ''
-                });
-                s.filterCount = 0;
-                s.lastUrl = '';
-                s.outcome = 'pending';
-                s.parseError = '';
-                updateIcon(tabId);
-            } else if (s.outcome !== 'pending') {
-                s.outcome = 'pending';
-                s.parseError = '';
-            }
-
-            s.seenM3U8 = true;
-            s.lastM3U8Url = msg.url;
-        }
-        sendResponse({ ok: true });
-        return;
-    }
-
-    if (msg.type === 'm3u8Filtered') {
-        const tabId = sender.tab ? sender.tab.id : -1;
-        if (tabId >= 0 && config.enabled) {
-            const s = ensureTabState(tabId);
-            const now = Date.now();
-            const url = msg.url;
-
-            s.seenM3U8 = true;
-            s.lastM3U8Url = url;
-            s.outcome = 'filtered';
-            s.parseError = '';
-
-            if (msg.adsCount > 0) {
-                const urlChanged = s.lastProcessedUrl && s.lastProcessedUrl !== url;
-
-                if (urlChanged ||
-                    s.lastProcessedUrl !== url ||
-                    (now - s.lastProcessedTime) >= STATUS_DEDUP_WINDOW_MS) {
-                    s.lastProcessedUrl = url;
-                    s.lastProcessedTime = now;
-                    s.filterCount = msg.adsCount;
-                    s.lastUrl = url;
-                    s.nativeHlsSuspect = false;
-                    setActiveData(tabId, {
-                        url: url,
-                        ads: msg.ads || [],
-                        headLines: msg.headLines || [],
-                        filtered: msg.filtered || ''
-                    });
-                    updateIcon(tabId);
-
-                    const shortUrl = url.length > 80 ? url.slice(0, 80) + '…' : url;
-                    pushLog(
-                        'filter',
-                        '移除 ' + msg.adsCount + ' 行 | 模式 ' + (msg.modeName || '') +
-                        ' | 规则 ' + ((msg.rules || []).join('+')) +
-                        ' | ' + shortUrl,
-                        { url: url, ads: msg.ads }
-                    );
-                }
-            }
-        }
-        sendResponse({ ok: true });
-        return;
-    }
-
-    if (msg.type === 'm3u8Status') {
-        const tabId = sender.tab ? sender.tab.id : -1;
-        if (tabId >= 0 && config.enabled) {
-            const s = ensureTabState(tabId);
-
-            // 同 URL 已有 filtered 时，no-ads 不覆盖（防止双路径冲突）
-            if (msg.outcome === 'no-ads' &&
-                s.outcome === 'filtered' &&
-                s.lastM3U8Url === msg.url) {
-                sendResponse({ ok: true });
-                return;
-            }
-
-            s.seenM3U8 = true;
-            s.lastM3U8Url = msg.url;
-            s.outcome = msg.outcome;
-            s.parseError = msg.parseError || '';
-
-            const prevData = getActiveData(tabId);
-            if (prevData && prevData.url !== msg.url) {
-                setActiveData(tabId, {
-                    url: msg.url,
-                    ads: [],
-                    headLines: [],
-                    filtered: ''
-                });
-                s.filterCount = 0;
-                s.lastUrl = '';
-                updateIcon(tabId);
-            }
-
-            if (msg.outcome === 'invalid' || msg.outcome === 'parse-error') {
-                const err = msg.parseError || '';
-                if (err === 'empty') pushLog('error', '响应为空 | ' + msg.url);
-                else if (err === 'html') pushLog('error', '响应是 HTML（错误页或重定向） | ' + msg.url);
-                else if (err === 'not-m3u8') pushLog('error', '响应不是 m3u8 内容 | ' + msg.url);
-                else if (err === 'empty-playlist') pushLog('error', 'm3u8 无分片内容 | ' + msg.url);
-                else if (err) pushLog('error', '解析失败: ' + err + ' | ' + msg.url);
-            }
-        }
-        sendResponse({ ok: true });
         return;
     }
 
@@ -963,6 +934,7 @@ browser.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
             hasExportAd: !!(data && data.ads && data.ads.length > 0),
             hasExportClean: !!(data && data.filtered && data.filtered.length > 0),
             adLineCount: data && data.ads ? data.ads.length : 0,
+            lastRule: s ? s.lastRule : '',
             whitelistMode: config.whitelistMode,
             enabled: config.enabled,
             inWhitelist: host ? isInWhitelist(host) : false,
@@ -986,16 +958,10 @@ browser.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
             .then(function (tabs) {
                 for (const t of tabs) {
                     if (t.id < 0) continue;
-
                     if (!config.enabled) {
                         resetTabResult(t.id);
                     }
                     updateIcon(t.id, true);
-
-                    browser.tabs.sendMessage(t.id, {
-                        type: 'extensionToggled',
-                        enabled: config.enabled
-                    }).catch(function () {});
                 }
                 sendResponse({ ok: true, enabled: config.enabled });
             })
@@ -1163,7 +1129,6 @@ async function downloadText(text, filename) {
     }
 }
 
-// 只返回内容，不下载。由 popup 决定下载方式。
 async function handleExportAd(tabId) {
     const data = getActiveData(tabId);
     if (!data) return { ok: false, error: '当前标签页没有可导出的数据' };

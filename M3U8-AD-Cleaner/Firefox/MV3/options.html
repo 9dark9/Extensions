@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>M3U8 AD Cleaner 设置</title>
+<style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    :root {
+      --pad: 24px;
+      --font-base: 14px;
+      --input-height: 34px;
+      --chip-pad: 3px 4px 3px 10px;
+      --chip-font: 12px;
+    }
+    @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+      :root {
+        --pad: 16px;
+        --font-base: 15px;
+        --input-height: 44px;
+        --chip-pad: 6px 8px 6px 14px;
+        --chip-font: 13px;
+      }
+    }
+    body {
+      margin: 0;
+      padding: var(--pad);
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      font-size: var(--font-base);
+      color: #222;
+      background: #f7f8fa;
+      min-height: 100vh;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #eee; }
+      .card { background: #252525 !important; }
+      .hint { color: #888 !important; }
+      input { background: #1a1a1a !important; color: #eee !important; border-color: #444 !important; }
+      .chip { background: #2a3152 !important; color: #a5b4fc !important; }
+      .chip .x:hover { background: rgba(255,255,255,.15) !important; }
+      .empty { border-color: #333 !important; color: #777 !important; }
+      .saved-tip { background: #22a06b; }
+      .refresh-hint { color: #ef5350 !important; }
+      .current-mode { color: #60a5fa; border-top-color: #333; }
+      .backup-row { border-top-color: #333; }
+      .action-btn.ghost { color: #60a5fa !important; border-color: #3d4682 !important; }
+      .action-btn.ghost:hover { background: #2a3152 !important; }
+    }
+    h1 { font-size: 18px; margin: 0 0 16px; }
+    .container { max-width: 720px; margin: 0 auto; }
+
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.06);
+    }
+    .card h2 {
+      font-size: calc(var(--font-base) + 1px);
+      margin: 0 0 8px;
+      font-weight: 700;
+    }
+    .hint {
+      font-size: calc(var(--font-base) - 2px);
+      color: #666;
+      line-height: 1.6;
+      margin: 0 0 8px;
+    }
+    .hint:last-child { margin-bottom: 0; }
+    .hint b { color: #4f6df5; }
+
+    .current-mode {
+      font-size: calc(var(--font-base) - 1px);
+      font-weight: 700;
+      color: #4f6df5;
+      margin: 16px 0 0;
+      padding-top: 12px;
+      border-top: 1px dashed #e5e7eb;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 6px 0;
+      min-height: 32px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: var(--chip-pad);
+      background: #eef2ff;
+      color: #3730a3;
+      border-radius: 14px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: var(--chip-font);
+      max-width: 100%;
+      transition: background .15s;
+    }
+    .chip .host {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 240px;
+    }
+    @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+      .chip .host { max-width: 180px; }
+      .chip .x {
+        width: 24px;
+        height: 24px;
+        font-size: 18px;
+      }
+    }
+    .chip .x {
+      flex: 0 0 auto;
+      width: 18px;
+      height: 18px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      border-radius: 50%;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0;
+      font-family: inherit;
+    }
+    .chip .x:hover { background: rgba(0,0,0,.1); }
+
+    /* ============ chip 高亮动画 ============ */
+    @keyframes chipFlash {
+        0%   { box-shadow: 0 0 0 2px #f5c542, 0 0 14px 4px rgba(245, 197, 66, 0.65); }
+        60%  { box-shadow: 0 0 0 2px #f5c542, 0 0 14px 4px rgba(245, 197, 66, 0.45); }
+        100% { box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+    }
+    .chip.chip-new {
+        animation: chipFlash 2s ease-out;
+    }
+    @keyframes chipRemoving {
+        0%   { box-shadow: 0 0 0 2px #ef4444, 0 0 14px 4px rgba(239, 68, 68, 0.70); }
+        50%  { box-shadow: 0 0 0 3px #ef4444, 0 0 20px 6px rgba(239, 68, 68, 0.90); }
+        100% { box-shadow: 0 0 0 2px #ef4444, 0 0 14px 4px rgba(239, 68, 68, 0.70); }
+    }
+    .chip.chip-removing {
+        animation: chipRemoving 0.35s ease-in-out infinite;
+    }
+    @media (prefers-color-scheme: dark) {
+        @keyframes chipFlash {
+            0%   { box-shadow: 0 0 0 2px #e8c14a, 0 0 16px 4px rgba(232, 193, 74, 0.7); }
+            60%  { box-shadow: 0 0 0 2px #e8c14a, 0 0 16px 4px rgba(232, 193, 74, 0.5); }
+            100% { box-shadow: 0 0 0 0 transparent, 0 0 0 0 transparent; }
+        }
+        @keyframes chipRemoving {
+            0%   { box-shadow: 0 0 0 2px #f87171, 0 0 16px 4px rgba(248, 113, 113, 0.75); }
+            50%  { box-shadow: 0 0 0 3px #f87171, 0 0 22px 6px rgba(248, 113, 113, 0.95); }
+            100% { box-shadow: 0 0 0 2px #f87171, 0 0 16px 4px rgba(248, 113, 113, 0.75); }
+        }
+    }
+    /* ==================================== */
+
+    .empty {
+      padding: 10px 12px;
+      text-align: center;
+      color: #999;
+      font-size: calc(var(--font-base) - 2px);
+      border: 1px dashed #ddd;
+      border-radius: 6px;
+      width: 100%;
+    }
+
+    .add-row { display: flex; gap: 8px; margin-top: 8px; }
+    .add-row input {
+      flex: 1 1 auto;
+      height: var(--input-height);
+      padding: 0 12px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: calc(var(--font-base) - 1px);
+      font-family: ui-monospace, Consolas, monospace;
+      min-width: 0;
+    }
+    .add-row input:focus { outline: none; border-color: #4f6df5; }
+    .add-row input:disabled {
+      background: #f0f0f0;
+      color: #999;
+      cursor: not-allowed;
+    }
+    .add-row button {
+      flex: 0 0 auto;
+      height: var(--input-height);
+      padding: 0 16px;
+      border: 0;
+      border-radius: 6px;
+      background: #4f6df5;
+      color: #fff;
+      font-size: calc(var(--font-base) - 1px);
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .add-row button:hover { opacity: .88; }
+    .add-row button:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    @media (max-width: 360px) {
+      .add-row { flex-direction: column; }
+      .add-row button { width: 100%; }
+    }
+
+    .refresh-hint {
+      text-align: center;
+      color: #dc3545;
+      font-size: calc(var(--font-base) - 1px);
+      margin: 8px 0 0;
+      line-height: 1.6;
+    }
+
+    .backup-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px dashed #e5e7eb;
+    }
+    .backup-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .debug-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px dashed #e5e7eb;
+      cursor: pointer;
+      user-select: none;
+      font-size: calc(var(--font-base) - 1px);
+      color: #666;
+    }
+    .debug-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+      accent-color: #4f6df5;
+      flex: 0 0 auto;
+    }
+    @media (prefers-color-scheme: dark) {
+      .debug-row { color: #888; border-top-color: #333; }
+    }
+    .action-btn {
+      flex: 0 0 auto;
+      height: 34px;
+      padding: 0 16px;
+      border-radius: 6px;
+      border: 0;
+      font-size: calc(var(--font-base) - 1px);
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity .15s, background .15s;
+      white-space: nowrap;
+    }
+    .action-btn:hover:not(:disabled) { opacity: .88; }
+    .action-btn:disabled { opacity: .5; cursor: not-allowed; }
+    .action-btn.danger { background: #dc3545; color: #fff; }
+    .action-btn.primary { background: #4f6df5; color: #fff; }
+    .action-btn.ghost {
+      background: transparent;
+      color: #4f6df5;
+      border: 1px solid #4f6df5;
+    }
+    .action-btn.ghost:hover:not(:disabled) { background: #eef2ff; opacity: 1; }
+
+    @media (max-width: 480px), (hover: none) and (pointer: coarse) {
+      .action-btn { height: 42px; padding: 0 18px; }
+    }
+
+    @media (max-width: 360px) {
+      .backup-row {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .backup-right {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .action-btn { width: 100%; }
+    }
+
+    .saved-tip {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #22c55e;
+      color: #fff;
+      padding: 8px 18px;
+      border-radius: 6px;
+      font-size: calc(var(--font-base) - 1px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .25s;
+      z-index: 100;
+      max-width: 90%;
+      text-align: center;
+    }
+    .saved-tip.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>M3U8 AD Cleaner 设置</h1>
+
+  <div class="card">
+    <h2>过滤模式</h2>
+    <p class="hint"><b>全匹配</b>：除排除名单外的所有网站都启用过滤。</p>
+    <p class="hint"><b>白名单</b>：仅下列白名单中的网站启用。</p>
+    <p class="hint">修改模式请点击扩展图标，在弹出面板中切换。</p>
+    <p class="current-mode">当前过滤模式：<span id="currentModeText">—</span></p>
+  </div>
+
+  <div class="card">
+    <h2>白名单站点</h2>
+    <p class="hint">仅白名单模式生效。填主域名（如 <code>example.com</code>），或填正则表达式（如 <code>/\/play\//</code>）。正则需用 <code>/</code> 包裹，大小写不敏感。</p>
+    <div class="chips" id="whitelistChips"></div>
+    <div class="add-row">
+      <input type="text" id="whitelistInput" placeholder="example.com" autocomplete="off">
+      <button id="whitelistAddBtn">添加</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>额外排除站点</h2>
+    <p class="hint">无论哪种模式，这些站点都不处理。支持域名，或匹配完整 URL 的正则表达式（如 <code>/^https?:\/\/live\./</code>）。扩展已内置一批主流视频站和 CDN，这里是额外排除项。</p>
+    <div class="chips" id="excludeChips"></div>
+    <div class="add-row">
+      <input type="text" id="excludeInput" placeholder="example.com" autocomplete="off">
+      <button id="excludeAddBtn">添加</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>备份与维护</h2>
+    <p class="hint"><b>导入</b>：可从 JSON 文件恢复名单。</p>
+    <p class="hint"><b>导出</b>：可将当前所有名单保存为 JSON 文件。</p>
+    <p class="hint"><b>重置</b>：将清空所有名单并恢复默认设置。</p>
+    <div class="backup-row">
+      <button id="resetAllBtn" class="action-btn danger">重置</button>
+      <div class="backup-right">
+        <button id="importConfigBtn" class="action-btn ghost">导入</button>
+        <button id="exportConfigBtn" class="action-btn primary">导出</button>
+      </div>
+      <input type="file" id="importFileInput" accept=".json,application/json" style="display:none;">
+    </div>
+    <label class="debug-row">
+        <input type="checkbox" id="debugToggle">
+        <span>开启调试日志</span>
+    </label>
+  </div>
+
+  <p class="refresh-hint">*提示：如果您所操作的名单已在浏览器中打开，请手动刷新相应的网页。</p>
+</div>
+
+<div class="saved-tip" id="savedTip">已保存</div>
+
+<script src="options.js"></script>
+</body>
+</html>

@@ -9,7 +9,7 @@
         hostname: document.getElementById('hostname'),
         status: document.getElementById('status'),
         count: document.getElementById('count'),
-        adInfo: document.getElementById('adInfo'),
+        ruleInfo: document.getElementById('ruleInfo'),
         lastUrl: document.getElementById('lastUrl'),
         lastUrlRow: document.getElementById('lastUrlRow'),
         exportAdBtn: document.getElementById('exportAdBtn'),
@@ -69,7 +69,7 @@
         setStatus(msg, false);
         el.hostname.textContent = '—';
         el.count.textContent = '0';
-        el.adInfo.textContent = '—';
+        el.ruleInfo.textContent = '—';
         el.exportAdBtn.disabled = true;
         el.exportCleanBtn.disabled = true;
     }
@@ -139,6 +139,52 @@
         }, delayMs || 100);
     }
 
+    // ★ 用 <a download> 直接下载（不走 chrome.downloads，避免 blob URL 被 UUID 覆盖）
+    function triggerDownloadInPopup(text, filename) {
+        const blob = new Blob([text], { type: 'application/vnd.apple.mpegurl' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        // 不 revoke，让浏览器 GC；只清理 DOM 节点
+        setTimeout(function () {
+            try { a.remove(); } catch (e) {}
+        }, 3000);
+    }
+
+    async function doExport(kind) {
+        if (currentTabId < 0) return;
+        const btn = kind === 'ad' ? el.exportAdBtn : el.exportCleanBtn;
+        btn.disabled = true;
+
+        try {
+            const r = await chrome.runtime.sendMessage({
+                type: kind === 'ad' ? 'exportAd' : 'exportClean',
+                tabId: currentTabId
+            });
+
+            if (!r || !r.ok) {
+                showToast('导出失败：' + ((r && r.error) || '未知错误'), 4000);
+                btn.disabled = false;
+                return;
+            }
+
+            triggerDownloadInPopup(r.text, r.filename);
+            if (r.count !== undefined) {
+                showToast('已开始下载：' + r.filename + '（' + r.count + ' 行）');
+            } else {
+                showToast('已开始下载：' + r.filename);
+            }
+        } catch (e) {
+            showToast('导出失败：' + e.message, 4000);
+        } finally {
+            setTimeout(refresh, 800);
+        }
+    }
+
     async function refresh() {
         el.hostname.textContent = '加载中…';
         setStatus('加载中', false);
@@ -204,30 +250,29 @@
             setStatus(statusText, resp.status === 'active');
             setCount(resp.filterCount || 0);
 
-            // ---- 广告片段状态 ----
             const detect = resp.detect || { seen: false, outcome: 'none', parseError: '' };
-            let adInfoText = '—';
+            let ruleText = '—';
 
             if (detect.outcome === 'pending') {
-                adInfoText = '检查中…';
+                ruleText = '检查中…';
             } else if (detect.outcome === 'filtered') {
-                adInfoText = (resp.adLineCount || 0) + ' 行';
+                ruleText = resp.lastRule;
             } else if (detect.outcome === 'no-ads') {
-                adInfoText = '已检查，未发现广告';
+                ruleText = '未发现广告';
             } else if (detect.outcome === 'invalid') {
                 const pe = detect.parseError;
-                if (pe === 'empty') adInfoText = '响应为空';
-                else if (pe === 'html') adInfoText = '响应是 HTML';
-                else if (pe === 'not-m3u8') adInfoText = '响应不是 m3u8';
-                else if (pe === 'empty-playlist') adInfoText = 'm3u8 无分片';
-                else adInfoText = '响应无效';
+                if (pe === 'empty') ruleText = '响应为空';
+                else if (pe === 'html') ruleText = '响应是 HTML';
+                else if (pe === 'not-m3u8') ruleText = '不是 m3u8';
+                else if (pe === 'empty-playlist') ruleText = '无分片';
+                else ruleText = '响应无效';
             } else if (detect.outcome === 'parse-error') {
-                adInfoText = '解析失败';
+                ruleText = '解析失败';
             } else if (detect.seen) {
-                adInfoText = '检查中…';
+                ruleText = '检查中…';
             }
 
-            el.adInfo.textContent = adInfoText;
+            el.ruleInfo.textContent = ruleText;
 
             if (resp.lastUrl) {
                 el.lastUrlRow.style.display = '';
@@ -238,7 +283,6 @@
                 el.lastUrlRow.style.display = 'none';
             }
 
-            // HLS 按钮：硬排除站点隐藏
             if (currentInHardExclude) {
                 el.hlsBtn.style.display = 'none';
             } else if (currentHlsDisabled) {
@@ -265,7 +309,6 @@
                 el.footerHint.textContent = '切换状态、模式或名单后，页面会自动刷新。';
             }
 
-            // 白名单按钮
             if (!currentWhitelistMode || currentInHardExclude) {
                 el.whitelistBtn.style.display = 'none';
             } else if (currentInWhitelist) {
@@ -282,7 +325,6 @@
                 el.whitelistBtn.classList.add('ghost');
             }
 
-            // 排除名单按钮
             if (currentInHardExclude) {
                 el.excludeBtn.style.display = 'none';
             } else {
@@ -299,8 +341,8 @@
                 }
             }
 
-            el.exportAdBtn.disabled = !resp.hasExport;
-            el.exportCleanBtn.disabled = !resp.hasExport;
+            el.exportAdBtn.disabled = !resp.hasExportAd;
+            el.exportCleanBtn.disabled = !resp.hasExportClean;
 
         } catch (e) {
             console.error('[AD-Popup] refresh 失败:', e);
@@ -461,31 +503,11 @@
     });
 
     el.exportAdBtn.addEventListener('click', function () {
-        if (currentTabId < 0) return;
-        el.exportAdBtn.disabled = true;
-        showToast('准备导出…', 60000);
-        chrome.runtime.sendMessage({ type: 'exportAd', tabId: currentTabId }, function (r) {
-            if (r && r.ok) {
-                showToast('已开始下载：' + r.filename + '（' + r.count + ' 行）');
-            } else {
-                showToast('导出失败：' + ((r && r.error) || '未知错误'), 4000);
-            }
-            setTimeout(refresh, 600);
-        });
+        doExport('ad');
     });
 
     el.exportCleanBtn.addEventListener('click', function () {
-        if (currentTabId < 0) return;
-        el.exportCleanBtn.disabled = true;
-        showToast('准备导出…', 60000);
-        chrome.runtime.sendMessage({ type: 'exportClean', tabId: currentTabId }, function (r) {
-            if (r && r.ok) {
-                showToast('已开始下载：' + r.filename);
-            } else {
-                showToast('导出失败：' + ((r && r.error) || '未知错误'), 4000);
-            }
-            setTimeout(refresh, 600);
-        });
+        doExport('clean');
     });
 
     refresh();

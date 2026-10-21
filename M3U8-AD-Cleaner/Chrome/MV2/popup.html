@@ -3,7 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <style>
+  :root { color-scheme: light dark; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {
     width: 320px;
@@ -90,7 +92,7 @@
     align-items: center;
     gap: 6px;
     font-weight: 600;
-  }
+  } 
   .dot {
     width: 8px;
     height: 8px;
@@ -106,6 +108,7 @@
     line-height: 1;
   }
   .count.zero { color: #94a3b8; }
+  #ruleInfo { font-weight: 700; }
 
   .mode-toggle {
     display: inline-flex;
@@ -245,8 +248,8 @@
     <span class="row-value"><span class="count zero" id="count">0</span> 行</span>
   </div>
   <div class="row">
-    <span class="row-label">广告片段</span>
-    <span class="row-value" id="adInfo">—</span>
+    <span class="row-label">过滤规则</span>
+    <span class="row-value" id="ruleInfo">—</span>
   </div>
   <div class="row" id="lastUrlRow" style="display:none;">
     <span class="row-label">最近</span>
@@ -257,13 +260,14 @@
 <div class="footer">
   <button id="exportAdBtn" disabled>导出广告片段</button>
   <button id="exportCleanBtn" disabled>导出无广告 m3u8</button>
+  <button id="hlsBtn" style="display:none;">—</button>
   <button id="whitelistBtn" style="display:none;">—</button>
   <button id="excludeBtn" style="display:none;">—</button>
   <button id="logBtn" class="ghost">过滤日志</button>
   <button id="optionsBtn" class="ghost">⚙️ 设置</button>
 </div>
 
-<p class="footer-hint">切换状态、模式或名单后，页面会自动刷新</p>
+<p class="footer-hint" id="footerHint">切换状态、模式、名单或 HLS 后，页面会自动刷新。</p>
 
 <div id="toast"></div>
 
