@@ -1,4 +1,4 @@
-# Addons
+# 浏览器扩展
 
 自用 Firefox 和 Chrome 扩展。
 
@@ -11,6 +11,7 @@
 ```js
 user_pref("xpinstall.signatures.required", false); // 不校验扩展签名，自定义安装扩展
 ```
+*注：已签名的可直接安装，以上适用于无签名的扩展。
 
 ### 2. 安装扩展
 
