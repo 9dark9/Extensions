@@ -40,6 +40,7 @@ function pushLog(type, text, extra) {
     };
     if (extra) {
         if (extra.url) entry.url = String(extra.url);
+        if (extra.removedLines) entry.removedLines = extra.removedLines;
         if (extra.ads && extra.ads.length) {
             entry.ads = extra.ads.length > MAX_LOG_ADS_LINES
                 ? extra.ads.slice(0, MAX_LOG_ADS_LINES)
@@ -827,6 +828,21 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         return true;
     }
 
+    if (msg.type === 'checkSeen') {
+        ensureInit().then(function () {
+            const tabId = sender.tab ? sender.tab.id : -1;
+            const s = tabId >= 0 ? tabState.get(tabId) : null;
+            sendResponse({
+                seen: !!(s && s.seenM3U8),
+                outcome: s ? s.outcome : 'none',
+                parseError: s ? s.parseError : ''
+            });
+        }).catch(function () {
+            sendResponse({ seen: false, outcome: 'none', parseError: '' });
+        });
+        return true;
+    }
+
     if (msg.type === 'm3u8Pending') {
         ensureInit().then(function () {
             const tabId = sender.tab ? sender.tab.id : -1;
@@ -888,7 +904,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
                             '移除 ' + msg.adsCount + ' 行 | 模式 ' + (msg.modeName || '') +
                             ' | 规则 ' + ((msg.rules || []).join('+')) +
                             ' | ' + shortUrl,
-                            { url: url, ads: msg.ads }
+                            { url: url, ads: msg.ads, removedLines: msg.adsCount }
                         );
                     }
                 }

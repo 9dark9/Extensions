@@ -20,6 +20,7 @@ function pushLog(type, text, extra) {
     const entry = { time: Date.now(), type: type, text: String(text) };
     if (extra) {
         if (extra.url) entry.url = String(extra.url);
+        if (extra.removedLines) entry.removedLines = extra.removedLines;
         if (extra.ads && extra.ads.length) entry.ads = extra.ads.slice();
     }
     LOG_BUFFER.push(entry);
@@ -669,7 +670,7 @@ browser.webRequest.onBeforeRequest.addListener(
                             '移除 ' + stats.removedLines + ' 行 | 模式 ' + stats.modeName +
                             ' | 规则 ' + (stats.rules || []).join('+') +
                             ' | ' + shortUrl,
-                            { url: details.url, ads: ads }
+                            { url: details.url, ads: ads, removedLines: stats.removedLines }
                         );
                     }
                 }

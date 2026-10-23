@@ -399,9 +399,9 @@
         function checkBackground() {
             return new Promise(function (resolve) {
                 try {
-                    chrome.runtime.sendMessage({ type: 'checkFiltered' }, function (r) {
+                    chrome.runtime.sendMessage({ type: 'checkSeen' }, function (r) {
                         if (chrome.runtime.lastError) { resolve(false); return; }
-                        resolve(!!(r && r.hasFiltered));
+                        resolve(!!(r && r.seen));
                     });
                 } catch (e) {
                     resolve(false);

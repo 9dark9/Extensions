@@ -50,7 +50,12 @@
 
         const labelDiv = document.createElement('div');
         labelDiv.className = 'ad-label';
-        labelDiv.textContent = '被删内容 ' + entry.ads.length + ' 行：';
+        const total = entry.removedLines || entry.ads.length;
+        if (total > entry.ads.length) {
+            labelDiv.textContent = '被删内容 ' + total + ' 行（下方仅显示前 ' + entry.ads.length + ' 行）：';
+        } else {
+            labelDiv.textContent = '被删内容 ' + entry.ads.length + ' 行：';
+        }
 
         const preEl = document.createElement('pre');
         preEl.className = 'ad-pre';
@@ -190,15 +195,18 @@
             const t = new Date(l.time);
             const pad = function (n) { return n < 10 ? '0' + n : '' + n; };
             const timeStr = t.getFullYear() + '-' +
-                pad(t.getMonth() + 1) + '-' +
-                pad(t.getDate()) + ' ' +
-                pad(t.getHours()) + ':' +
-                pad(t.getMinutes()) + ':' +
-                pad(t.getSeconds());
+                pad(t.getMonth() + 1) + '-' + pad(t.getDate()) + ' ' +
+                pad(t.getHours()) + ':' + pad(t.getMinutes()) + ':' + pad(t.getSeconds());
             let line = '[' + timeStr + '] [' + (l.type || 'system') + '] ' + l.text;
             if (l.ads && l.ads.length > 0) {
-                line += '\n  --- 被删内容（' + l.ads.length + ' 行）---\n  ' +
-                    l.ads.join('\n  ');
+                const total = l.removedLines || l.ads.length;
+                if (total > l.ads.length) {
+                    line += '\n  --- 被删内容（' + total + ' 行，下方仅显示前 ' + l.ads.length + ' 行）---\n  ' +
+                        l.ads.join('\n  ');
+                } else {
+                    line += '\n  --- 被删内容（' + l.ads.length + ' 行）---\n  ' +
+                        l.ads.join('\n  ');
+                }
             }
             return line;
         }).join('\n\n');

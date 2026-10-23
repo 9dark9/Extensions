@@ -31,6 +31,7 @@ function pushLog(type, text, extra) {
     };
     if (extra) {
         if (extra.url) entry.url = String(extra.url);
+        if (extra.removedLines) entry.removedLines = extra.removedLines;
         if (extra.ads && extra.ads.length) {
             entry.ads = extra.ads.length > MAX_LOG_ADS_LINES
                 ? extra.ads.slice(0, MAX_LOG_ADS_LINES)
@@ -959,7 +960,7 @@ browser.webRequest.onBeforeRequest.addListener(
                             '移除 ' + stats.removedLines + ' 行 | 模式 ' + stats.modeName +
                             ' | 规则 ' + (stats.rules || []).join('+') +
                             ' | ' + shortUrl,
-                            { url: details.url, ads: ads }
+                            { url: details.url, ads: ads, removedLines: stats.removedLines }
                         );
                     }
                 } else {
